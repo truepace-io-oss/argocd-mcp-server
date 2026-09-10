@@ -1,0 +1,55 @@
+{{- /*
+Write guard for the LOCAL instance.
+
+RBAC is resource-scoped: `patch` on applications grants write access to the
+whole object, and three fields can redirect a sync at an attacker-controlled
+source — spec.source(s), operation.sync.source(s) and status.history[].source.
+The controller then applies those manifests with ITS privileges.
+
+This ValidatingAdmissionPolicy closes all three. It is rendered only when the
+sync tier is enabled, so the dangerous verb can never ship unaccompanied.
+
+The CEL below is mirrored from internal/argocd/guard.go and asserted against a
+real cluster in test/e2e/kind/e2e_guard_test.go.
+*/ -}}
+{{- if and .Values.localInstance.enabled (eq .Values.localInstance.rbac.tier "sync") .Values.localInstance.writeGuard.enabled }}
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: {{ .Values.localInstance.writeGuard.name }}
+  labels:
+    {{- include "argocd-mcp.labels" . | nindent 4 }}
+spec:
+  failurePolicy: {{ .Values.localInstance.writeGuard.failurePolicy }}
+  matchConstraints:
+    resourceRules:
+      - apiGroups:   ["argoproj.io"]
+        apiVersions: ["v1alpha1"]
+        operations:  ["UPDATE"]
+        resources:   ["applications"]
+  matchConditions:
+    # Scoped to this ServiceAccount only: the Argo CD controller and humans are
+    # never evaluated, so a broken policy cannot wedge normal operation.
+    - name: only-argocd-mcp
+      expression: 'request.userInfo.username == "system:serviceaccount:{{ .Release.Namespace }}:{{ include "argocd-mcp.serviceAccountName" . }}"'
+  validations:
+    - expression: 'object.spec == oldObject.spec'
+      message: 'argocd-mcp may not modify Application.spec'
+    # The nested has() guards are load-bearing: has() errors on a missing
+    # intermediate field, and with failurePolicy=Fail an error denies the request.
+    - expression: '!has(object.operation) || !has(object.operation.sync) || (!has(object.operation.sync.source) && !has(object.operation.sync.sources))'
+      message: 'argocd-mcp may not override the source inside an operation'
+    - expression: '(has(object.status) && has(object.status.history) ? object.status.history : []) == (has(oldObject.status) && has(oldObject.status.history) ? oldObject.status.history : [])'
+      message: 'argocd-mcp may not modify status.history'
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: {{ .Values.localInstance.writeGuard.name }}
+  labels:
+    {{- include "argocd-mcp.labels" . | nindent 4 }}
+spec:
+  policyName: {{ .Values.localInstance.writeGuard.name }}
+  # Audit first, then Deny — see docs/rbac.md for the staging procedure.
+  validationActions: {{ toJson .Values.localInstance.writeGuard.validationActions }}
+{{- end }}

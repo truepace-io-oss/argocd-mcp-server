@@ -1,0 +1,27 @@
+{
+  "//": "Claude Code: one entry per argocd-mcp instance. 'type':'http' is required. See docs/auth.md for how the OIDC client config depends on Dynamic Client Registration (DCR).",
+  "mcpServers": {
+    "argocd-tools": {
+      "//": "OIDC via Authentik (no DCR): give the pre-registered public client_id + the provider's OIDC discovery URL. Browser login on first use; run: claude mcp login argocd-tools.",
+      "type": "http",
+      "url": "https://argocd-mcp.example.com/mcp",
+      "oauth": {
+        "clientId": "argocd-mcp",
+        "authServerMetadataUrl": "https://auth.example.com/application/o/argocd-mcp/.well-known/openid-configuration"
+      }
+    },
+    "argocd-keycloak": {
+      "//": "OIDC via a DCR-capable provider (e.g. Keycloak): just the URL — the client self-registers.",
+      "type": "http",
+      "url": "https://argocd-mcp.example.com/mcp"
+    },
+    "argocd-private": {
+      "//": "Static bearer token.",
+      "type": "http",
+      "url": "https://argocd-mcp.private.example.com/mcp",
+      "headers": {
+        "Authorization": "Bearer ${PRIVATE_MCP_TOKEN}"
+      }
+    }
+  }
+}

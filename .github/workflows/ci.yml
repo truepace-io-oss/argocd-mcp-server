@@ -1,0 +1,155 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  ENVTEST_K8S_VERSION: "1.34.0"
+  ARGOCD_VERSION: "v3.5.2"
+
+jobs:
+  # ---- Unit tests ----------------------------------------------------------
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go vet ./...
+      - run: test -z "$(gofmt -l .)" || { gofmt -l -d .; exit 1; }
+      - run: go test ./internal/... -race -count=1
+
+  # ---- E2E against a real kube-apiserver with the real Argo CD CRDs --------
+  e2e-envtest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Install setup-envtest
+        run: go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest
+      - name: Run envtest E2E
+        run: |
+          export KUBEBUILDER_ASSETS="$(setup-envtest use "${ENVTEST_K8S_VERSION}" -p path)"
+          go test ./test/e2e/... -race -count=1
+
+  # ---- Helm chart lint + template validation -------------------------------
+  helm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: azure/setup-helm@v5
+      - name: Lint
+        run: helm lint deploy/helm/argocd-mcp
+      - name: Template (defaults, OIDC + ESO + remote instance, sync tier, static auth)
+        run: |
+          helm template t deploy/helm/argocd-mcp > /dev/null
+          helm template t deploy/helm/argocd-mcp \
+            --set localInstance.rbac.tier=sync \
+            --set 'localInstance.applicationNamespaces={team-a}' \
+            --set auth.enabled=true --set auth.oidc.enabled=true \
+            --set auth.oidc.issuer=https://auth.example.com/application/o/argocd-mcp/ \
+            --set auth.oidc.audience=argocd-mcp \
+            --set 'remoteInstances[0].name=demo' \
+            --set 'remoteInstances[0].server=https://x:6443' \
+            --set 'remoteInstances[0].eso.tokenRef=uuid-t' \
+            --set 'remoteInstances[0].eso.caRef=uuid-c' > /dev/null
+          helm template t deploy/helm/argocd-mcp \
+            --set auth.enabled=true --set auth.static.enabled=true \
+            --set 'auth.static.tokens[0].name=ci' \
+            --set 'auth.static.tokens[0].eso.ref=x' > /dev/null
+          helm template t deploy/helm/argocd-mcp --set localInstance.rbac.tier=none > /dev/null
+          # the write guard must be coupled to the sync tier: present with it,
+          # absent without it.
+          helm template t deploy/helm/argocd-mcp --set localInstance.rbac.tier=sync \
+            --set 'localInstance.writeGuard.validationActions={Audit}' > /dev/null
+          test "$(helm template t deploy/helm/argocd-mcp \
+            | grep -c 'kind: ValidatingAdmissionPolicy' || true)" = "0"
+          test "$(helm template t deploy/helm/argocd-mcp --set localInstance.rbac.tier=sync \
+            | grep -c 'kind: ValidatingAdmissionPolicy' || true)" = "2"
+
+  # ---- E2E against a kind cluster running a real Argo CD -------------------
+  e2e-kind:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Create kind cluster and install Argo CD
+        run: ./test/e2e/kind/setup-kind.sh amcp-e2e "${ARGOCD_VERSION}"
+      - name: Run kind E2E (sync flow + write guard)
+        run: go test -tags e2e_kind ./test/e2e/kind/... -count=1 -v -timeout 25m
+
+  # ---- Multi-arch image build + push to GHCR -------------------------------
+  build-and-push:
+    needs: [test, e2e-envtest, helm]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-qemu-action@v4
+      - uses: docker/setup-buildx-action@v4
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Image metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=sha
+            type=raw,value=latest,enable={{is_default_branch}}
+      - name: Build and push (linux/amd64, linux/arm64)
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ steps.meta.outputs.version }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ---- Helm chart release (OCI) --------------------------------------------
+  # On a vX.Y.Z tag, package the chart and push it to GHCR as an OCI artifact:
+  #   oci://ghcr.io/<owner>/charts/argocd-mcp:X.Y.Z
+  publish-chart:
+    needs: [helm, build-and-push]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: azure/setup-helm@v5
+      - name: Log in to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u ${{ github.actor }} --password-stdin
+      - name: Package and push chart
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          helm package deploy/helm/argocd-mcp --version "$VERSION" --app-version "$VERSION"
+          helm push "argocd-mcp-${VERSION}.tgz" "oci://ghcr.io/${{ github.repository_owner }}/charts"

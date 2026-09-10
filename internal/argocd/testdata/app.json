@@ -1,0 +1,46 @@
+{
+  "apiVersion": "argoproj.io/v1alpha1",
+  "kind": "Application",
+  "metadata": {
+    "name": "web-api",
+    "namespace": "argocd",
+    "labels": {"env": "prod"},
+    "annotations": {"argocd.argoproj.io/refresh": "normal"}
+  },
+  "operation": {"sync": {"revision": "HEAD"}},
+  "spec": {
+    "project": "tools",
+    "source": {
+      "repoURL": "https://git.example.com/org/gitops.git",
+      "path": "rendered/envs/tools/web-api",
+      "targetRevision": "main"
+    },
+    "destination": {"name": "in-cluster", "namespace": "web-api"},
+    "syncPolicy": {"automated": {"prune": true, "selfHeal": true}}
+  },
+  "status": {
+    "sync": {"status": "OutOfSync", "revision": "8f3c1ad"},
+    "health": {"status": "Degraded", "message": "pod crash-looping"},
+    "reconciledAt": "2026-09-08T07:00:00Z",
+    "operationState": {
+      "phase": "Running",
+      "message": "syncing",
+      "startedAt": "2026-09-08T07:01:00Z",
+      "syncResult": {"revision": "8f3c1ad"},
+      "operation": {"initiatedBy": {"username": "argocd-mcp:daniel"}}
+    },
+    "resources": [
+      {"group": "apps", "version": "v1", "kind": "Deployment", "namespace": "web-api", "name": "core",
+       "status": "OutOfSync", "health": {"status": "Degraded", "message": "crash"}, "syncWave": 1},
+      {"version": "v1", "kind": "Service", "namespace": "web-api", "name": "core",
+       "status": "Synced", "health": {"status": "Healthy"}},
+      {"version": "v1", "kind": "ConfigMap", "namespace": "web-api", "name": "old",
+       "status": "Synced", "requiresPruning": true}
+    ],
+    "history": [
+      {"id": 3, "revision": "r3", "deployedAt": "2026-09-07T10:00:00Z", "source": {"repoURL": "https://git/x.git", "path": "a"}, "initiatedBy": {"username": "admin"}},
+      {"id": 1, "revision": "r1", "deployedAt": "2026-09-01T10:00:00Z"}
+    ],
+    "conditions": [{"type": "SyncError", "message": "boom"}]
+  }
+}

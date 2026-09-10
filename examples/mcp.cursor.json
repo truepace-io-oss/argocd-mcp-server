@@ -1,0 +1,11 @@
+{
+  "//": "Cursor: streamable-HTTP MCP servers are configured with url + optional headers.",
+  "mcpServers": {
+    "argocd-tools": {
+      "url": "https://argocd-mcp.example.com/mcp",
+      "headers": {
+        "Authorization": "Bearer ${ARGOCD_MCP_TOKEN}"
+      }
+    }
+  }
+}

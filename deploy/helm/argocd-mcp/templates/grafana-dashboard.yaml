@@ -1,0 +1,22 @@
+{{- if .Values.grafanaDashboard.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "argocd-mcp.fullname" . }}-dashboard
+  {{- with .Values.grafanaDashboard.namespace }}
+  namespace: {{ . }}
+  {{- end }}
+  labels:
+    {{- include "argocd-mcp.labels" . | nindent 4 }}
+    {{ .Values.grafanaDashboard.label }}: {{ .Values.grafanaDashboard.labelValue | quote }}
+    {{- with .Values.grafanaDashboard.extraLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- with .Values.grafanaDashboard.folder }}
+  annotations:
+    {{ $.Values.grafanaDashboard.folderAnnotation }}: {{ . | quote }}
+  {{- end }}
+data:
+  argocd-mcp.json: |-
+{{ .Files.Get "dashboards/argocd-mcp.json" | indent 4 }}
+{{- end }}

@@ -1,0 +1,61 @@
+{{- /*
+RBAC for the LOCAL Argo CD instance (the one in this cluster).
+
+Namespaced on purpose: this server never needs cluster-scoped access. One
+Role + RoleBinding is rendered per Argo CD namespace.
+
+  read-only → get/list/watch on applications, appprojects, applicationsets
+  sync      → the above plus `patch` on applications. `patch` alone is enough:
+              every mutation this server performs is a JSON merge patch, and the
+              Application CRD has no status subresource, so terminate-op works
+              through the same verb. `create`/`delete`/`update` are never granted.
+  none      → nothing is rendered (bring your own Role)
+
+NOTE: because the server writes the Application CR directly, Argo CD's own RBAC
+(argocd-rbac-cm) is NOT consulted. The Role below is the entire blast radius.
+*/ -}}
+{{- if and .Values.localInstance.enabled (ne .Values.localInstance.rbac.tier "none") }}
+{{- $root := . }}
+{{- $namespaces := include "argocd-mcp.localNamespaces" . | fromJsonArray }}
+{{- range $ns := $namespaces }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "argocd-mcp.fullname" $root }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "argocd-mcp.labels" $root | nindent 4 }}
+rules:
+  - apiGroups: ["argoproj.io"]
+    resources: ["applications", "appprojects", "applicationsets"]
+    verbs: ["get", "list", "watch"]
+  {{- if eq $root.Values.localInstance.rbac.tier "sync" }}
+  - apiGroups: ["argoproj.io"]
+    resources: ["applications"]
+    verbs: ["patch"]
+  {{- end }}
+  {{- if $root.Values.localInstance.rbac.versionProbe }}
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    resourceNames: ["argocd-server"]
+    verbs: ["get"]
+  {{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "argocd-mcp.fullname" $root }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "argocd-mcp.labels" $root | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "argocd-mcp.fullname" $root }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "argocd-mcp.serviceAccountName" $root }}
+    namespace: {{ $root.Release.Namespace }}
+{{- end }}
+{{- end }}

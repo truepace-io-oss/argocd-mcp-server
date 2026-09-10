@@ -1,0 +1,23 @@
+apiVersion: v2
+name: argocd-mcp
+description: |
+  MCP (Model Context Protocol) server that inspects and operates one or more
+  Argo CD installations. Each instance is reached through the Kubernetes API
+  server of its own cluster — no Argo CD ingress, VPN or API token is needed —
+  and authorization is delegated entirely to Kubernetes RBAC on argoproj.io.
+  Remote-instance credentials are configurable via the External Secrets
+  Operator (ESO).
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - mcp
+  - argocd
+  - gitops
+  - ai
+  - rbac
+home: https://github.com/truepace-io-oss/argocd-mcp-server
+sources:
+  - https://github.com/truepace-io-oss/argocd-mcp-server
+maintainers:
+  - name: truepace-io-oss

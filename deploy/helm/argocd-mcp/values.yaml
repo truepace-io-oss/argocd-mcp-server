@@ -1,0 +1,185 @@
+# Default values for argocd-mcp.
+
+image:
+  repository: ghcr.io/truepace-io-oss/argocd-mcp-server
+  tag: ""            # defaults to .Chart.AppVersion
+  pullPolicy: IfNotPresent
+
+# Image pull secret. When externalSecrets.enabled and imagePullSecret.esoRef are
+# set, a dockerconfigjson Secret is created via ESO; otherwise set an existing
+# secret name in imagePullSecret.existingSecret.
+imagePullSecret:
+  esoRef: ""         # Bitwarden (or other backend) UUID for a dockerconfigjson
+  existingSecret: "" # use a pre-existing pull secret instead
+
+replicaCount: 1
+
+# ---- Server configuration (rendered into a ConfigMap as config.yaml) --------
+config:
+  listenAddr: "0.0.0.0:9090"
+  logLevel: "info"           # debug|info|warn|error
+  readOnly: false            # global kill-switch for all mutating tools
+  defaultInstance: "local"   # must match an instance name below
+
+# Prometheus metrics on a SEPARATE, unauthenticated port (never behind the MCP
+# auth or the public ingress). serviceMonitor.enabled requires metrics.enabled.
+metrics:
+  enabled: true
+  port: 9091
+
+# ---- Agent → MCP authentication (client-side link) --------------------------
+# Independent of instance auth. Disabled by default (protect via internal
+# ingress). When enabled, always run behind TLS.
+auth:
+  enabled: false
+  # (1) Shared bearer tokens. Each token's secret is provided via ESO (default)
+  #     or an existing Secret; it is mounted at /etc/amcp/auth/<name>/token.
+  static:
+    enabled: false
+    tokens: []
+      # - name: ci
+      #   eso:
+      #     ref: <backend-uuid>       # ExternalSecret → key `token`
+      # - name: legacy
+      #   existingSecret: my-secret   # must contain key `token`
+  # (2) OIDC resource server (Authentik / Keycloak). Needs no secret — JWKS is
+  #     public.
+  oidc:
+    enabled: false
+    issuer: ""                # Authentik: .../application/o/<slug>/ ; Keycloak: .../realms/<realm>
+    audience: ""              # == the Authentik client_id == token `aud`
+    jwksUrl: ""
+    requiredScopes: []
+    requiredGroups: []
+    groupsClaim: "groups"
+    usernameClaim: "preferred_username"
+    resourceMetadata: true
+
+# The in-cluster Argo CD: the installation in the cluster this pod runs in,
+# reached via the pod's own ServiceAccount token (no secret needed). Its RBAC is
+# configured under localInstance.rbac.
+localInstance:
+  enabled: true
+  name: "local"
+  namespace: "argocd"          # where the Application objects live
+  applicationNamespaces: []    # extra namespaces ("apps in any namespace")
+  readOnly: false
+  rbac:
+    # tier: read-only | sync | none
+    #   read-only → get/list/watch on applications, appprojects, applicationsets
+    #   sync      → the above plus `patch` on applications (app_sync / app_refresh /
+    #               app_rollback / app_terminate_operation)
+    #   none      → render no Role/RoleBinding (bring your own)
+    tier: read-only
+    # Best-effort Argo CD version probe for instances_list. Grants `get` on the
+    # single Deployment "argocd-server"; disable for a pure argoproj.io Role.
+    versionProbe: true
+  # Write guard: a ValidatingAdmissionPolicy that stops these credentials from
+  # rewriting an Application's source. Rendered only with rbac.tier=sync, because
+  # that is the only tier where the escalation is possible at all.
+  #
+  # Roll out as Audit, confirm zero violations from normal MCP traffic, then Deny.
+  # The server verifies the guard at runtime and publishes amcp_write_guard_active.
+  writeGuard:
+    enabled: true
+    name: argocd-mcp-write-guard
+    validationActions: ["Deny"]   # ["Audit"] while staging
+    # Ignore = a broken policy lets requests through; Fail = it blocks them.
+    # Fail is the safe direction here: the policy is scoped to one ServiceAccount,
+    # so failing closed stops only the MCP.
+    failurePolicy: Fail
+
+# Argo CD installations in OTHER clusters. Each entry mounts a Secret at
+# /etc/amcp/instances/<name>/{token,ca.crt} holding a ServiceAccount token and
+# the CA of that cluster's API server. Deploy the argocd-mcp-agent there to mint
+# them. With externalSecrets.enabled the Secret is produced by ESO from the
+# referenced backend keys; otherwise provide an existing secret.
+remoteInstances: []
+  # - name: cluster-a
+  #   server: https://api.cluster-a.example.com:6443
+  #   namespace: argocd
+  #   applicationNamespaces: []
+  #   readOnly: true
+  #   eso:
+  #     tokenRef: <backend-uuid-for-token>
+  #     caRef: <backend-uuid-for-ca.crt>
+  #   # or, without ESO:
+  #   existingSecret: cluster-a-creds   # must contain keys: token, ca.crt
+
+# ---- External Secrets Operator ---------------------------------------------
+externalSecrets:
+  enabled: true
+  secretStore:
+    kind: ClusterSecretStore      # or SecretStore
+    name: secret-store
+  refreshInterval: 1h
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 9090
+
+# Ingress. Disabled by default. Enable auth (OIDC) before exposing this publicly.
+ingress:
+  enabled: false
+  className: nginx-internal
+  host: ""                        # e.g. argocd-mcp.example.com
+  annotations:
+    # Streamable-HTTP needs long-lived, unbuffered connections.
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-request-buffering: "off"
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+  tls:
+    enabled: true
+    secretName: ""                # defaults to <fullname>-tls
+  # Optional HTTP basic-auth on top of the ingress.
+  basicAuth:
+    enabled: false
+    esoRef: ""                    # backend UUID for an htpasswd blob (key: auth)
+    existingSecret: ""
+
+serviceMonitor:
+  enabled: false
+  interval: "30s"
+  scrapeTimeout: "10s"
+  labels: {}
+
+# Grafana dashboard shipped as a ConfigMap the Grafana sidecar auto-discovers.
+grafanaDashboard:
+  enabled: false
+  label: grafana_dashboard      # sidecar discovery label
+  labelValue: "1"
+  folder: ""                    # optional Grafana folder name
+  folderAnnotation: grafana_folder
+  namespace: ""                 # optional; default = release namespace
+  extraLabels: {}
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi
+
+# Pod-level security context; the container runs as nonroot with a read-only
+# root filesystem (the distroless image ships no shell). runAsUser is the
+# numeric UID of the distroless "nonroot" user — required so Kubernetes can
+# verify runAsNonRoot (the image's USER is a name, not a number).
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

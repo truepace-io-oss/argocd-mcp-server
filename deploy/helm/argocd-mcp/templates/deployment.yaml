@@ -1,0 +1,99 @@
+{{- $root := . }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "argocd-mcp.fullname" . }}
+  labels:
+    {{- include "argocd-mcp.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "argocd-mcp.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "argocd-mcp.selectorLabels" . | nindent 8 }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+    spec:
+      serviceAccountName: {{ include "argocd-mcp.serviceAccountName" . }}
+      {{- if or .Values.imagePullSecret.esoRef .Values.imagePullSecret.existingSecret }}
+      imagePullSecrets:
+        - name: {{ .Values.imagePullSecret.existingSecret | default (printf "%s-pull" (include "argocd-mcp.fullname" .)) }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: argocd-mcp
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["--config", "/etc/amcp/config.yaml"]
+          ports:
+            - name: http
+              containerPort: {{ .Values.service.targetPort }}
+            {{- if .Values.metrics.enabled }}
+            - name: metrics
+              containerPort: {{ .Values.metrics.port }}
+            {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 15
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/amcp/config.yaml
+              subPath: config.yaml
+              readOnly: true
+            {{- range .Values.remoteInstances }}
+            - name: instance-{{ .name }}
+              mountPath: /etc/amcp/instances/{{ .name }}
+              readOnly: true
+            {{- end }}
+            {{- if .Values.auth.enabled }}
+            {{- range .Values.auth.static.tokens }}
+            - name: auth-{{ .name }}
+              mountPath: /etc/amcp/auth/{{ .name }}
+              readOnly: true
+            {{- end }}
+            {{- end }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "argocd-mcp.fullname" . }}
+        {{- range .Values.remoteInstances }}
+        - name: instance-{{ .name }}
+          secret:
+            secretName: {{ .existingSecret | default (include "argocd-mcp.remoteSecretName" (dict "root" $root "instance" .)) }}
+        {{- end }}
+        {{- if .Values.auth.enabled }}
+        {{- range .Values.auth.static.tokens }}
+        - name: auth-{{ .name }}
+          secret:
+            secretName: {{ .existingSecret | default (printf "%s-auth-%s" (include "argocd-mcp.fullname" $root) .name) }}
+        {{- end }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

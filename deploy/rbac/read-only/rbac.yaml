@@ -1,0 +1,62 @@
+# argocd-mcp remote-cluster credentials — read-only tier.
+#
+# Apply this in a cluster whose Argo CD should be managed by an argocd-mcp
+# running elsewhere, then run ../extract-credentials.sh to obtain the token and
+# CA for the MCP's configuration.
+#
+# Everything is namespaced: this never grants cluster-scoped access.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: argocd-mcp
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: argocd-mcp
+  namespace: argocd-mcp
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: argocd-mcp-read-only
+  namespace: argocd
+rules:
+  - apiGroups: ["argoproj.io"]
+    resources: ["applications", "appprojects", "applicationsets"]
+    verbs: ["get", "list", "watch"]
+  # Optional: lets instances_list show the Argo CD version. Drop it for a Role
+  # that touches nothing but argoproj.io.
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    resourceNames: ["argocd-server"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: argocd-mcp-read-only
+  namespace: argocd
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: argocd-mcp-read-only
+subjects:
+  - kind: ServiceAccount
+    name: argocd-mcp
+    namespace: argocd-mcp
+---
+# Static, non-expiring ServiceAccount token. The token controller fills
+# .data.token and .data.ca.crt. Extract these and store them in your secret
+# backend so the remote MCP can pull them via ESO. (Static tokens don't rotate
+# and can only be revoked by deleting this Secret — the accepted trade-off for a
+# cross-cluster registration credential; the MCP re-reads the file on every
+# request, so replacing it needs no restart.)
+apiVersion: v1
+kind: Secret
+metadata:
+  name: argocd-mcp-token
+  namespace: argocd-mcp
+  annotations:
+    kubernetes.io/service-account.name: argocd-mcp
+type: kubernetes.io/service-account-token

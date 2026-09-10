@@ -1,0 +1,60 @@
+# argocd-mcp — example configuration.
+#
+# An "instance" is one Argo CD installation. It is always reached through the
+# Kubernetes API server of the cluster Argo CD runs in — never through the
+# Argo CD HTTP API — so a remote instance needs no ingress, no VPN and no
+# Argo CD account: only a ServiceAccount whose RBAC allows working with
+# argoproj.io resources in the Argo CD namespace.
+
+listenAddr: "0.0.0.0:9090"
+metricsAddr: ":9091"          # separate, unauthenticated port; "off" disables it
+logLevel: info                # debug|info|warn|error
+readOnly: false               # global kill-switch for every mutating tool
+
+defaultInstance: tools
+
+instances:
+  # (a) In-cluster: the Argo CD in the cluster this process runs in, using the
+  #     pod's projected ServiceAccount token. No secret needed.
+  - name: tools
+    inCluster: true
+    namespace: argocd         # where the Application objects live
+    readOnly: false
+
+  # (b) Remote cluster: API server URL + CA + ServiceAccount token. The file
+  #     forms are preferred — client-go re-reads them, so rotating ESO-managed
+  #     credentials are picked up without a restart.
+  - name: cluster-a
+    server: https://api.cluster-a.example.com:6443
+    certificateAuthorityFile: /etc/amcp/instances/cluster-a/ca.crt
+    tokenFile: /etc/amcp/instances/cluster-a/token
+    namespace: argocd
+    readOnly: true            # start read-only; flip once you trust it
+
+  # (c) Kubeconfig context (handy for local development).
+  - name: kind
+    kubeconfigFile: /root/.kube/config
+    context: kind-amcp-e2e
+    namespace: argocd
+    # Argo CD "apps in any namespace": extra namespaces to search.
+    applicationNamespaces:
+      - team-a
+
+# How the AI agent authenticates to THIS server. Independent of instance
+# credentials: this decides who may call the MCP, Kubernetes RBAC decides what
+# the MCP may do. Leave disabled only behind a trusted internal ingress.
+auth:
+  enabled: false
+  static:
+    enabled: false
+    tokens:
+      - name: ci
+        tokenFile: /etc/amcp/auth/ci/token   # preferred over an inline `token`
+  oidc:
+    enabled: false
+    issuer: "https://auth.example.com/application/o/argocd-mcp/"
+    audience: "argocd-mcp"                    # == the Authentik client_id
+    groupsClaim: groups
+    usernameClaim: preferred_username         # lands in operation.initiatedBy.username
+    requiredGroups: []
+    resourceMetadata: true

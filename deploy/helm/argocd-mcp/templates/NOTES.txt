@@ -1,0 +1,39 @@
+argocd-mcp {{ .Chart.AppVersion }} deployed as release "{{ .Release.Name }}" in namespace "{{ .Release.Namespace }}".
+
+The MCP endpoint is served at path /mcp on:
+  Service: {{ include "argocd-mcp.fullname" . }}.{{ .Release.Namespace }}.svc:{{ .Values.service.port }}
+{{- if .Values.ingress.enabled }}
+  Ingress: https://{{ .Values.ingress.host }}/mcp   (class: {{ .Values.ingress.className }})
+{{- end }}
+
+Managed Argo CD instances:
+{{- if .Values.localInstance.enabled }}
+  - {{ .Values.localInstance.name }} (in-cluster, namespace {{ .Values.localInstance.namespace }}, RBAC tier: {{ .Values.localInstance.rbac.tier }})
+{{- end }}
+{{- range .Values.remoteInstances }}
+  - {{ .name }} (remote: {{ .server }}, namespace {{ default "argocd" .namespace }}{{ if .readOnly }}, read-only{{ end }})
+{{- end }}
+
+{{ if .Values.auth.enabled -}}
+Agent authentication is ENABLED ({{ if .Values.auth.oidc.enabled }}oidc{{ end }}{{ if and .Values.auth.oidc.enabled .Values.auth.static.enabled }}+{{ end }}{{ if .Values.auth.static.enabled }}static{{ end }}).
+{{- else -}}
+⚠️  Agent authentication is DISABLED. The streamable-HTTP transport then has no
+    authentication at all — only expose it on a trusted / internal ingress.
+{{- end }}
+
+{{ if eq .Values.localInstance.rbac.tier "read-only" -}}
+The local instance is read-only: app_sync / app_refresh / app_rollback /
+app_terminate_operation will be denied by Kubernetes RBAC. Set
+localInstance.rbac.tier=sync to allow them.
+{{- end }}
+
+Add it to an AI agent (Claude Code) with:
+{{- if .Values.ingress.enabled }}
+  claude mcp add --transport http {{ .Release.Name }} https://{{ .Values.ingress.host }}/mcp
+{{- else }}
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "argocd-mcp.fullname" . }} 9090:{{ .Values.service.port }}
+  claude mcp add --transport http {{ .Release.Name }} http://127.0.0.1:9090/mcp
+{{- end }}
+
+For pod logs, events, nodes or generic Kubernetes objects use the separate
+kubernetes-mcp server — this one exposes Argo CD operations only.

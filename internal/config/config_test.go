@@ -73,11 +73,12 @@ func TestEnvOIDCOverride(t *testing.T) {
 	t.Setenv("AMCP_AUTH_ENABLED", "true")
 	t.Setenv("AMCP_AUTH_OIDC_ISSUER", "https://auth.example.com/application/o/x/")
 	t.Setenv("AMCP_AUTH_OIDC_AUDIENCE", "argocd-mcp")
+	t.Setenv("AMCP_AUTH_OIDC_RESOURCE", "https://argocd-mcp.example.com/mcp")
 	cfg, err := Load(writeCfg(t, minimal))
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
-	if !cfg.Auth.OIDC.Enabled || cfg.Auth.OIDC.Audience != "argocd-mcp" {
+	if !cfg.Auth.OIDC.Enabled || cfg.Auth.OIDC.Audience != "argocd-mcp" || cfg.Auth.OIDC.Resource != "https://argocd-mcp.example.com/mcp" {
 		t.Fatalf("oidc env override not applied: %+v", cfg.Auth.OIDC)
 	}
 }
@@ -239,6 +240,7 @@ auth:
     enabled: true
     issuer: "https://auth.example.com/application/o/argocd-mcp/"
     audience: "argocd-mcp"
+    resource: "https://argocd-mcp.example.com/mcp"
     jwksUrl: ""
     groupsClaim: "groups"
     usernameClaim: "preferred_username"
@@ -257,5 +259,29 @@ auth:
 	}
 	if !cfg.Auth.OIDC.Enabled || !cfg.Auth.OIDC.ServeResourceMetadata() {
 		t.Fatalf("auth block parsed wrong: %+v", cfg.Auth)
+	}
+}
+
+func TestOIDCResourceValidation(t *testing.T) {
+	metadataDisabled := false
+	cases := []struct {
+		name    string
+		oidc    AuthOIDC
+		wantErr bool
+	}{
+		{"separate resource", AuthOIDC{Enabled: true, Issuer: "https://auth.example.com/", Audience: "argocd-mcp", Resource: "https://argocd-mcp.example.com/mcp"}, false},
+		{"absolute audience fallback", AuthOIDC{Enabled: true, Issuer: "https://auth.example.com/", Audience: "https://argocd-mcp.example.com/mcp"}, false},
+		{"client id without resource", AuthOIDC{Enabled: true, Issuer: "https://auth.example.com/", Audience: "argocd-mcp"}, true},
+		{"resource with fragment", AuthOIDC{Enabled: true, Issuer: "https://auth.example.com/", Audience: "argocd-mcp", Resource: "https://argocd-mcp.example.com/mcp#fragment"}, true},
+		{"resource with empty fragment", AuthOIDC{Enabled: true, Issuer: "https://auth.example.com/", Audience: "argocd-mcp", Resource: "https://argocd-mcp.example.com/mcp#"}, true},
+		{"metadata disabled", AuthOIDC{Enabled: true, Issuer: "https://auth.example.com/", Audience: "argocd-mcp", ResourceMetadata: &metadataDisabled}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := (Auth{Enabled: true, OIDC: tc.oidc}).validate()
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("validate() error = %v, wantErr %t", err, tc.wantErr)
+			}
+		})
 	}
 }

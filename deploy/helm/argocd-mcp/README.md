@@ -89,7 +89,8 @@ auth:
   oidc:
     enabled: true
     issuer: "https://auth.example.com/application/o/argocd-mcp/"
-    audience: "argocd-mcp"          # == the Authentik client_id
+    audience: "argocd-mcp"          # expected access-token aud / Authentik client_id
+    resource: "https://argocd-mcp.example.com/mcp" # RFC 9728 resource URL
     requiredGroups: ["argocd-mcp-users"]
 ```
 

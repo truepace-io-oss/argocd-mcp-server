@@ -147,6 +147,7 @@ func TestE2EAuthStatic(t *testing.T) {
 func TestE2EAuthOIDC(t *testing.T) {
 	iss := newE2EMockIssuer(t)
 	const aud = "argocd-mcp"
+	const resource = "https://argocd-mcp.e2e/mcp"
 	const ns = "e2e-auth-oidc"
 	clusterTok := syncToken(t, ns, "mcp-sa2", "e2e-auth-oidc-role")
 
@@ -158,6 +159,7 @@ func TestE2EAuthOIDC(t *testing.T) {
 			Enabled:  true,
 			Issuer:   iss.url,
 			Audience: aud,
+			Resource: resource,
 			// config.Load() fills these in from defaults; the Helm chart always
 			// renders them explicitly, so mirror production here.
 			GroupsClaim:   "groups",
@@ -172,8 +174,8 @@ func TestE2EAuthOIDC(t *testing.T) {
 	}
 	body, _ := io.ReadAll(resp.Body)
 	_ = resp.Body.Close()
-	if !strings.Contains(string(body), iss.url) || !strings.Contains(string(body), aud) {
-		t.Fatalf("metadata missing issuer/audience: %s", body)
+	if !strings.Contains(string(body), iss.url) || !strings.Contains(string(body), resource) {
+		t.Fatalf("metadata missing issuer/resource: %s", body)
 	}
 
 	// No token → rejected.
